@@ -360,3 +360,106 @@ while (true) {
 - 监听 socket 也放在 `readfds` 里，有新连接时它变成"可读"
 - 客户端断开时 `recv()` 返回 0，记得从 `clients` 列表移除并 `closesocket()`
 - `FD_SETSIZE` 默认上限 64，select 适合几十个连接，更多连接用 IOCP（Windows）或 epoll（Linux）
+
+---
+
+## 第5课：自定义协议与粘包处理
+
+### 为什么 TCP 会粘包
+
+TCP 是流协议，没有消息边界：
+
+```text
+发送方：send("hello") → send("world")
+接收方：recv() 可能一次收到 "helloworld"（粘包）
+       recv() 也可能收到 "hel" + "loworld"（半包）
+```
+
+### 解决方案：长度前缀协议
+
+每条消息前加 4 字节头部记录长度：
+
+```text
+┌──────────────┬──────────────────────────┐
+│ 长度 (4B)    │ 消息内容 (N 字节)         │
+│ htonl(N)     │ data[0..N-1]             │
+└──────────────┴──────────────────────────┘
+```
+
+### 三个辅助函数（记入模板）
+
+```cpp
+// 保证收满 len 字节（处理半包）
+int recv_all(SOCKET s, char* buf, int len) {
+    int total = 0;
+    while (total < len) {
+        int n = recv(s, buf + total, len - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+// 按协议收一条完整消息：先读4字节长度，再读内容
+int recv_msg(SOCKET s, char* buf, int bufSize) {
+    int netLen;
+    if (recv_all(s, (char*)&netLen, 4) <= 0) return -1;
+    int len = ntohl(netLen);
+    if (len > bufSize) return -1;
+    if (recv_all(s, buf, len) <= 0) return -1;
+    return len;
+}
+
+// 按协议发一条消息：先发4字节长度，再发内容
+void send_msg(SOCKET s, const char* data, int len) {
+    int netLen = htonl(len);
+    send(s, (char*)&netLen, 4, 0);
+    send(s, data, len, 0);
+}
+```
+
+### 登录协议
+
+客户端连接后先发 `/name:xxx` 注册用户名：
+
+```text
+客户端 → 服务端：/name:alice
+服务端：存下名字 "alice"，不广播这条消息
+```
+
+服务端判断逻辑：
+
+```cpp
+// 名字为空且消息以 /name: 开头 → 登录消息
+if (client.name.empty() && msg.rfind("/name:", 0) == 0) {
+    client.name = msg.substr(6);
+    continue;  // 不广播
+}
+```
+
+### 退出通知
+
+客户端断开时（`recv_msg` 返回 `-1`），服务端广播 `"xxx left"`。
+
+### 项目文件结构
+
+```text
+webServer/
+├── CMakeLists.txt     ← CMake 构建
+├── build.bat          ← 一键编译
+├── run_server.bat     ← 启动服务端
+├── run_client.bat     ← 启动客户端
+├── .gitignore
+├── learning.md
+└── src/
+    ├── echo_server.cpp
+    └── echo_client.cpp
+```
+
+### 当前功能清单
+
+- [x] echo 通信（一对一回显）
+- [x] 多客户端广播（select）
+- [x] 自定义协议（长度前缀）
+- [x] 用户名登录
+- [x] 退出通知
