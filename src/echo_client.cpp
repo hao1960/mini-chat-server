@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
+#include<vector>
 
 const int PORT = 8888;
 const int BUFFER_SIZE = 1024;

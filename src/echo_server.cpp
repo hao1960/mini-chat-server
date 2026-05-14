@@ -111,7 +111,13 @@ void Channel::handleEvent(uint32_t revents){
         if(closeCb_) closeCb_();
     }
 }
-
+struct ClientInfo {
+        int sock;
+        std::string name;
+        std::string inBuf;//加入缓冲区，用于存储未完整接收的消息数据
+        Channel*channel;//每个客户端对应一个Channel对象，用于管理这个客户端套接字的事件
+        time_t lastActiveTime=time(nullptr);//记录客户端的最后活跃时间，用于实现超时断开功能
+    };
 
 
 //读取数据到缓冲区，返回是否成功读取到完整消息
@@ -155,7 +161,43 @@ void send_msg(int s, const char* data, int len) {
     send(s, (char*)&netLen, 4, 0);
     send(s, data, len, 0);
 }
+bool handle_http_request(int fd,const std::string& inBuf,std::vector<ClientInfo>& clients){
+    //只处理GET请求
+    if(inBuf.rfind("GET ",0)!=0) return false;//不是GET请求，交给聊天消息处理
+    //解析请求行，提取路径（"GET / HTTP/1.1..."->"/"）
+    size_t start=inBuf.find(' ')+1;//第一个空格后面是路径的开始
+    size_t end=inBuf.find(' ',start);//第二个空格是路径的结束
+    std::string path=inBuf.substr(start,end-start);
 
+    std::string body;
+    std::string status;
+    int onlineCount=0;
+    if(path=="/"){
+        for(const auto&client:clients){
+            if(!client.name.empty()) onlineCount++;
+        }
+        status="200 OK";
+        //构造简单HTML界面
+        body="<html><head><title>Chat Server</title></head><body>";
+        body+="<h1>Mini Chat Server</h1><h3>在线用户 ("+std::to_string(onlineCount)+")</h3><ul>";
+        for(const auto& client:clients){
+            if(!client.name.empty()){
+                body+="<li>"+client.name+"</li>";
+            }
+        }
+        body+="</ul></body></html>";
+    }else{
+        status="404 NOT FOUND";
+        body="404 NOT FOUND";
+    }
+    //构造HTTP响应
+    std::string response="HTTP/1.1 "+status+"\r\nContent-Type: text/html;charset=utf-8\r\n";
+    response+="Content-Length: "+std::to_string(body.size())+"\r\n\r\n";
+    response+=body;
+    //发送响应
+    send(fd,response.c_str(),response.size(),0);
+    return true;//表示已经处理了这个请求
+}
 int main() {
     //设置标准输入stdin为非阻塞
     fcntl(STDIN_FILENO,F_SETFL,fcntl(STDIN_FILENO,F_GETFL,0)|O_NONBLOCK);
@@ -188,13 +230,7 @@ int main() {
         return -1;
     }
 
-    struct ClientInfo {
-        int sock;
-        std::string name;
-        std::string inBuf;//加入缓冲区，用于存储未完整接收的消息数据
-        Channel*channel;//每个客户端对应一个Channel对象，用于管理这个客户端套接字的事件
-        time_t lastActiveTime=time(nullptr);//记录客户端的最后活跃时间，用于实现超时断开功能
-    };
+    
     std::vector<ClientInfo> clients;
     //创建EventLoop对象，管理事件循环和Channel对象
     EventLoop loop;
@@ -290,6 +326,16 @@ int main() {
                         clients.erase(clients.begin()+idx);
                         return;
                     }
+                    //检查是否是HTTP请求，如果是就处理HTTP请求并返回，不继续往下处理了
+                    if(handle_http_request(clients[idx].sock,clients[idx].inBuf,clients)){
+                        //HTTP请求已经处理，断开
+                        clientChannel->disableAll();
+                        close(clients[idx].sock);
+                        delete clientChannel;
+                        clients.erase(clients.begin()+idx);
+                        return;
+                    }
+
                     //parse消息
                     char buf[BUFFER_SIZE];
                     while(true){
