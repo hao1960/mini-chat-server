@@ -467,6 +467,33 @@ webServer/
 - [X] 用户名登录
 - [X] 退出通知
 
+### 协议安全问题
+
+当前协议 `[长度4B][消息N]` 有一个致命漏洞：**没有合法性校验**。任何数据的头 4 字节都会被当成长度字段解析。如果有人用 telnet 连上来随便打字，头 4 字节可能解析出负数、超大数，导致越界或逻辑错误。
+
+**解决：加魔数（Magic Number）**
+
+```text
+旧协议： [长度 4B][消息 N 字节]
+新协议： [魔数 0xAB 0xCD][长度 2B][消息 N 字节]
+                  ↑
+          固定两个字节，作为"身份证"
+```
+
+**校验流程：**
+
+```text
+收到数据 → 前 2 字节 == 0xABCD？
+  → 是  → 读长度 → 读消息体 → 正常处理
+  → 否  → 非法数据，立即断开连接
+```
+
+魔数就像暗号——对不上就踢掉。常见的魔数：PNG 文件头 `89 50 4E 47`，JVM class 文件头 `CA FE BA BE`。
+
+### 面试话术
+
+> "我的协议在长度前缀前加了 2 字节魔数做合法性校验。收到数据时先比对魔数，不匹配就认为是非法连接直接断开。这跟 PNG 文件头、HTTP 的 `\r\n\r\n` 分隔符是一个思路——在字节流中加标志位来识别和验证数据。"
+
 ---
 
 ## 第6课：epoll
@@ -1063,7 +1090,78 @@ Content-Length: 13\r\n
 // 6. send 回去
 ```
 
-可以在聊天室上加一条 HTTP 接口：`GET /chat` 返回当前在线人数。
+### 实战：给聊天室加 HTTP 接口
+
+**方案：TCP 连接后根据首条消息判断协议**
+
+```text
+首条消息:
+  以 "GET " 或 "POST " 开头 → HTTP 客户端 → 返回网页 → 断开
+  以 "/name:" 开头          → 聊天客户端 → 正常协议 → 保持连接
+```
+
+**实现：**
+
+```cpp
+// ClientInfo 移到全局，handle_http 才能访问
+struct ClientInfo {
+    int sock;
+    std::string name;          // 名字为空 = 未登录
+    std::string inBuf;
+    Channel* channel;
+    time_t lastActiveTime;
+};
+
+bool handle_http(int fd, const std::string& inBuf, std::vector<ClientInfo>& clients) {
+    if (inBuf.rfind("GET ", 0) != 0) return false;  // 不是 HTTP
+
+    // 解析路径："GET / HTTP/1.1..." → "/"
+    size_t start = inBuf.find(' ') + 1;
+    size_t end   = inBuf.find(' ', start);
+    std::string path = inBuf.substr(start, end - start);
+
+    std::string body, status;
+    if (path == "/") {
+        status = "200 OK";
+        // 只统计已有名字的客户端（排除 HTTP 连接自己）
+        int online = 0;
+        for (auto& c : clients) if (!c.name.empty()) online++;
+        body = "<html>...在线用户 (" + std::to_string(online) + ")</html>";
+    } else {
+        status = "404 Not Found";
+        body   = "404 Not Found";
+    }
+
+    std::string resp = "HTTP/1.1 " + status + "\r\n"
+                       "Content-Type: text/html; charset=utf-8\r\n"
+                       "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    send(fd, resp.c_str(), resp.size(), 0);
+    return true;
+}
+```
+
+**调用位置：** 在客户端消息回调中，`read_to_buf` 之后、`parse_msg` 之前：
+
+```cpp
+// 读数据后先检查是否是 HTTP
+if (handle_http(clients[idx].sock, clients[idx].inBuf, clients)) {
+    // HTTP 已处理，断开连接
+    clientChannel->disableAll();
+    close(clients[idx].sock);
+    delete clientChannel;
+    clients.erase(clients.begin() + idx);
+    return;
+}
+// 不是 HTTP，走正常聊天协议
+parse_msg(...)
+```
+
+### 核心收获
+
+- HTTP 是纯文本协议，头部与 Body 用 `\r\n\r\n` 分隔
+- 首条消息判断协议类型即可让同一端口同时服务浏览器和聊天客户端
+- 在线人数统计要排除 HTTP 连接（没名字的），否则会把浏览器自己也数进去
+- Content-Length 必须精确，字节数 = 字符串的 `.size()`
 
 ---
 

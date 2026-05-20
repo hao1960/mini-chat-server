@@ -8,7 +8,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
-#include<vector>
+
 
 const int PORT = 8888;
 const int BUFFER_SIZE = 1024;
@@ -24,27 +24,34 @@ int recv_all(int s, char* buf, int len) {
     }
     return total;
 }
-
+//
 int recv_msg(int s, char* buf, int bufSize) {
-    int netLen;
-    if (recv_all(s, (char*)&netLen, 4) <= 0) return -1;
-    int len = ntohl(netLen);
-    if (len > bufSize) return -1;
-    if (recv_all(s, buf, len) < 0) return -1;
+    uint16_t magic;
+    if(recv_all(s,(char*)&magic,2)<=0) return -1;
+    if(ntohs(magic)!=0xABCD) return -2;//非法协议
+
+    uint16_t netLen;
+    if(recv_all(s,(char*)&netLen,2)<=0) return -1;
+    int len=ntohs(netLen);
+
+    if(len>bufSize||len<=0) return -1;
+    if(recv_all(s,buf,len)<0) return -1;
     return len;
 }
 
 void send_msg(int s, const char* data, int len) {
-    int netLen = htonl(len);
-    send(s, (char*)&netLen, 4, 0);
-    send(s, data, len, 0);
+    uint16_t  magic=htons(0xABCD);
+    send(s,(char*)&magic,2,0);
+    uint16_t netLen=htons((uint16_t)len);
+    send(s,(char*)&netLen,2,0);
+    send(s,data,len,0);
 }
 
 void recv_loop(int sock, std::atomic<bool>& running) {
     char buf[BUFFER_SIZE];
     while (running) {
         int n = recv_msg(sock, buf, BUFFER_SIZE);
-        if (n <= 0) break;
+        if (n <= 0) break;//-1,-2,0都断开
         std::cout << std::string(buf, n) << std::endl;
     }
     running = false;

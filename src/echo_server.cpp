@@ -140,26 +140,36 @@ int read_to_buf(int fd,std::string& buf){
 
 //从缓冲区提取完整消息，返回是否成功提取
 //返回消息长度，0表示数据不够等下一次，-1表示长度非法
+//新增魔数校验
 int parse_msg(std::string& buf,char*out,int outSize){
     if(buf.size()<4) return 0;//头部没有读全
 
-    int netLen;
-    memcpy(&netLen,buf.data(),4);
-    int msgLen=ntohl(netLen);//转换为主机字节序
+    //魔数校验
+    uint16_t magic;
+    memcpy(&magic,buf.data(),2);
+    if(magic!=ntohs(0xABCD)) return -2;//魔数不匹配，非法协议；htons转回小端格式
 
-    if(msgLen>outSize) return -1;//消息太大
-    if((int)buf.size()<4+msgLen) return 0;//消息体没有读全
-    
-    memcpy(out,buf.data()+4,msgLen);//复制消息体到输出缓冲区
-    buf.erase(0,4+msgLen);//从缓冲区删除取走的消息
+    //读2字节长度
+    uint16_t netLen;
+    memcpy(&netLen,buf.data()+2,2);
+    uint16_t msgLen=ntohs(netLen);
+    //长度合法性校验
+    if(msgLen>outSize||msgLen<=0) return -1;
+
+    memcpy(out,buf.data()+4,msgLen);//把消息内容复制到输出缓冲区
+    buf.erase(0,4+msgLen);//从输入缓冲区删除已经提取的消息数据
     return msgLen;
-
 }
-
+//新增魔数，用于信息安全校验
 void send_msg(int s, const char* data, int len) {
-    int netLen = htonl(len);
-    send(s, (char*)&netLen, 4, 0);
-    send(s, data, len, 0);
+    //先发2字节魔数0xABCD
+    uint16_t magic=htons(0xABCD);
+    send(s,(char*)&magic,2,0);
+    //再发2字节消息长度
+    uint16_t netLen=htons((uint16_t)len);
+    send(s,(char*)&netLen,2,0);
+    //最后发数据
+    send(s,data,len,0);
 }
 bool handle_http_request(int fd,const std::string& inBuf,std::vector<ClientInfo>& clients){
     //只处理GET请求
@@ -340,6 +350,14 @@ int main() {
                     char buf[BUFFER_SIZE];
                     while(true){
                         int msgLen=parse_msg(clients[idx].inBuf,buf,BUFFER_SIZE);
+                        //非法协议，直接断开连接
+                        if(msgLen==-2){
+                            clientChannel->disableAll();
+                            close(clients[idx].sock);
+                            delete clientChannel;
+                            clients.erase(clients.begin()+idx);//从客户端列表中移除这个客户端信息
+                            return;
+                        }
                         if(msgLen<=0){break;}//没有完整消息了
                         std::string msg(buf,msgLen);
                         //如果客户端还没有设置名字，并且消息以"/name:"开头，就把后面的部分作为名字设置上去，并广播加入消息
