@@ -1,3 +1,4 @@
+#include "protocol.h"
 #include <iostream>
 #include <string>
 #include <thread>
@@ -9,43 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 
-
-const int PORT = 8888;
-const int BUFFER_SIZE = 1024;
-
 std::atomic<bool> running{true};
-
-int recv_all(int s, char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int n = recv(s, buf + total, len - total, 0);
-        if (n <= 0) return -1;
-        total += n;
-    }
-    return total;
-}
-//
-int recv_msg(int s, char* buf, int bufSize) {
-    uint16_t magic;
-    if(recv_all(s,(char*)&magic,2)<=0) return -1;
-    if(ntohs(magic)!=0xABCD) return -2;//非法协议
-
-    uint16_t netLen;
-    if(recv_all(s,(char*)&netLen,2)<=0) return -1;
-    int len=ntohs(netLen);
-
-    if(len>bufSize||len<=0) return -1;
-    if(recv_all(s,buf,len)<0) return -1;
-    return len;
-}
-
-void send_msg(int s, const char* data, int len) {
-    uint16_t  magic=htons(0xABCD);
-    send(s,(char*)&magic,2,0);
-    uint16_t netLen=htons((uint16_t)len);
-    send(s,(char*)&netLen,2,0);
-    send(s,data,len,0);
-}
 
 void recv_loop(int sock, std::atomic<bool>& running) {
     char buf[BUFFER_SIZE];
