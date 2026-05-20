@@ -4,5 +4,5 @@ project(webServer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(echo_server src/echo_server.cpp src/reactor.cpp src/protocol.cpp)
+add_executable(echo_server src/echo_server.cpp src/reactor.cpp src/protocol.cpp src/logger.cpp)
 add_executable(echo_client src/echo_client.cpp src/protocol.cpp)

@@ -1,5 +1,6 @@
 #include "reactor.h"
 #include "protocol.h"
+#include "logger.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -13,13 +14,15 @@
 #include <ctime>
 
 int main() {
+    //logger初始化
+    Logger::instance().init("chat.log", Logger::DEBUG);
     // stdin 非阻塞
     fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL, 0) | O_NONBLOCK);
 
     // 创建 listen socket
     int listenSock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, IPPROTO_TCP);
     if (listenSock < 0) {
-        std::cerr << "socket() failed: " << strerror(errno) << std::endl;
+        Logger::instance().error("socket() failed: "+std::string(strerror(errno)));
         return -1;
     }
 
@@ -32,13 +35,13 @@ int main() {
     serverAddr.sin_port = htons(PORT);
 
     if (bind(listenSock, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        std::cerr << "bind() failed: " << strerror(errno) << std::endl;
+        Logger::instance().error("bind() failed: "+std::string(strerror(errno)));
         close(listenSock);
         return -1;
     }
 
     if (listen(listenSock, SOMAXCONN) < 0) {
-        std::cerr << "listen() failed: " << strerror(errno) << std::endl;
+        Logger::instance().error("listen() failed: "+std::string(strerror(errno)));
         close(listenSock);
         return -1;
     }
@@ -69,13 +72,12 @@ int main() {
         read(tfd, &exp, sizeof(exp));
 
         time_t now = time(nullptr);
-        std::cout << "[INFO] 在线: " << clients.size() << " 人" << std::endl;
-
+        Logger::instance().info("在线: " + std::to_string(clients.size()) + " 人");
         for (int i = (int)clients.size() - 1; i >= 0; i--) {
             if (now - clients[i].lastActiveTime > 30) {
                 if (!clients[i].name.empty()) {
                     std::string leaveMsg = clients[i].name + " timed out.";
-                    std::cout << leaveMsg << std::endl;
+                    Logger::instance().info(leaveMsg);
                     for (const auto& c : clients)
                         if (c.sock != clients[i].sock)
                             send_msg(c.sock, leaveMsg.c_str(), leaveMsg.size());
@@ -98,8 +100,7 @@ int main() {
             int clientSock = accept4(listenSock, (sockaddr*)&clientAddr, &addrLen, SOCK_NONBLOCK);
 
             if (clientSock >= 0) {
-                std::cout << "Client connected: " << inet_ntoa(clientAddr.sin_addr) << std::endl;
-
+                Logger::instance().info("Client connected: "+std::string(inet_ntoa(clientAddr.sin_addr)));
                 Channel* clientChannel = new Channel(&loop, clientSock);
                 clientChannel->enableReading();
                 clients.push_back({clientSock, "", "", clientChannel});
@@ -115,7 +116,7 @@ int main() {
                     if (ret <= 0) {
                         if (!clients[idx].name.empty()) {
                             std::string leaveMsg = clients[idx].name + " has left the chat.";
-                            std::cout << leaveMsg << std::endl;
+                            Logger::instance().info(leaveMsg);
                             for (const auto& c : clients)
                                 if (c.sock != clients[idx].sock)
                                     send_msg(c.sock, leaveMsg.c_str(), leaveMsg.size());
@@ -150,12 +151,12 @@ int main() {
                         std::string msg(buf, msgLen);
                         if (clients[idx].name.empty() && msg.rfind("/name:", 0) == 0) {
                             clients[idx].name = msg.substr(6);
-                            std::cout << clients[idx].name << " joined" << std::endl;
+                            Logger::instance().info(clients[idx].name + " joined");
                         } else {
                             for (const auto& c : clients)
                                 if (c.sock != clients[idx].sock)
                                     send_msg(c.sock, msg.c_str(), msg.size());
-                            std::cout << "Broadcast: " << msg << std::endl;
+                            Logger::instance().info("Broadcast: " + msg);
                         }
                     }
                 });
@@ -163,14 +164,14 @@ int main() {
             } else if (errno == EAGAIN) {
                 break;
             } else {
-                std::cerr << "accept4() failed: " << strerror(errno) << std::endl;
+                Logger::instance().error("accept4() failed: "+std::string(strerror(errno)));
                 break;
             }
         }
     });
 
     // ── 启动 ──
-    std::cout << "Listening on port " << PORT << "..." << std::endl;
+    Logger::instance().info("Listening on port " + std::to_string(PORT) + "...");
     loop.loop();
 
     for (auto& c : clients) { close(c.sock); delete c.channel; }
